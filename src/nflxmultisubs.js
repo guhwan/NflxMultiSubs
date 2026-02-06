@@ -513,16 +513,176 @@ class SubtitleFactory {
   }
 }
 
+// ================= [AI 번역: 스트리밍 & 버퍼링 모드] =================
+
+const AI_API_KEY = "key"; // 본인 키 확인
+const MODEL_NAME = "gemini-3-flash-preview";
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// 진행률 박스 UI 생성 함수
+function updateProgressUI(current, total, isComplete = false) {
+  let progressBox = document.getElementById('ai-progress-box');
+  if (!progressBox) {
+    progressBox = document.createElement('div');
+    progressBox.id = 'ai-progress-box';
+    // 방해되지 않게 반투명하고 작게 디자인
+    progressBox.style.cssText = "position: fixed; top: 80px; left: 20px; background: rgba(0, 0, 0, 0.7); color: #fff; padding: 10px 15px; z-index: 9999; border-radius: 8px; font-size: 14px; font-weight: bold; border-left: 4px solid #e50914; pointer-events: none; transition: opacity 0.5s;";
+    document.body.appendChild(progressBox);
+  }
+
+  const percent = Math.round((current / total) * 100);
+  
+  if (isComplete) {
+    progressBox.innerHTML = `✅ 번역 완료! 즐겁게 감상하세요.`;
+    setTimeout(() => { progressBox.style.opacity = 0; }, 5000);
+    setTimeout(() => { progressBox.remove(); }, 6000);
+  } else {
+    progressBox.innerHTML = `
+      ⚡ 실시간 번역 중... (${percent}%) <br>
+      <span style="font-size:12px; color:#ddd; font-weight:normal;">
+        ${current} / ${total} 줄 완료 <br>
+        영화 보셔도 됩니다 (앞부분부터 순차 적용됨)
+      </span>
+    `;
+  }
+}
+
+// 덩어리(Chunk) 단위로 번역해서 바로바로 적용하는 함수
+async function runStreamTranslation(subtitleInstance) {
+  const textLines = subtitleInstance.lines;
+  if (!textLines || textLines.length === 0) return;
+
+  const CHUNK_SIZE = 50; 
+  console.log(`[스트리밍 번역 시작] 총 ${textLines.length}줄`);
+
+  for (let i = 0; i < textLines.length; i += CHUNK_SIZE) {
+    // 1. 번역할 덩어리 자르기
+    const chunkEnd = Math.min(i + CHUNK_SIZE, textLines.length);
+    const chunk = textLines.slice(i, chunkEnd);
+    const originalTexts = chunk.map(l => l.text);
+
+    // 2. 프롬프트 (JSON 배열 형식 유지)
+    const prompt = `
+      Translate these subtitles from English to Korean naturally.
+      Context: Netflix Movie.
+      Rules:
+      1. Keep exactly ${originalTexts.length} lines.
+      2. No line numbers.
+      3. Keep music/sound effects as is.
+      4. Output strictly a JSON array of strings.
+      
+      Input:
+      ${JSON.stringify(originalTexts)}
+    `;
+
+    try {
+      // 3. API 호출
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${AI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+
+      const data = await response.json();
+      
+      // 데이터 파싱
+      let translatedArray = [];
+      try {
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        translatedArray = JSON.parse(rawText);
+      } catch (e) {
+        // 파싱 실패시 줄바꿈으로 시도
+        console.warn(`Chunk ${i} JSON 파싱 실패, 텍스트 모드로 대체`);
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        translatedArray = rawText.split('\n').filter(t => t.trim());
+      }
+
+      // 4. [핵심] 영문 + 한글 합치기 (Dual Subtitle Logic)
+      for (let j = 0; j < chunk.length; j++) {
+        if (translatedArray[j]) {
+          const original = originalTexts[j].replace(/\n/g, ' '); // 영문 내 불필요한 줄바꿈 제거 (깔끔하게)
+          const korean = translatedArray[j];
+          
+          // ✨ 여기서 합칩니다! (위: 영어 / 아래: 한글)
+          subtitleInstance.lines[i + j].text = `${original}\n${korean}`;
+        }
+      }
+
+      // 5. UI 업데이트
+      updateProgressUI(chunkEnd, textLines.length);
+      console.log(`[진행률] ${chunkEnd} / ${textLines.length} 완료`);
+
+      // 6. 넷플릭스가 변경된 자막을 다시 그리도록 강제 리프레시 신호
+      // (RendererLoop가 dirty flag를 확인하게 함)
+      if (window.__NflxMultiSubs && window.__NflxMultiSubs.rendererLoop) {
+         // 이 부분은 외부에서 접근이 어려울 수 있으므로, 
+         // 단순히 자막 텍스트만 바꿔두면 다음 프레임 렌더링 때 자동 반영됩니다.
+      }
+
+      // API 속도 제한 고려 (0.3초 대기)
+      await delay(800);
+
+    } catch (error) {
+      console.error(`Chunk ${i} 번역 실패 (원문 유지):`, error);
+      // 실패해도 멈추지 않고 다음 덩어리로 넘어감
+    }
+  }
+
+  updateProgressUI(textLines.length, textLines.length, true);
+  console.log("모든 번역 완료!");
+}
+
+class AiTranslatedSubtitle extends TextSubtitle {
+  constructor(lang, bcp47, urls, isCaption) {
+    super(lang, bcp47, urls, isCaption);
+    this.isAi = true;
+  }
+
+  // 데이터 다운로드 및 파싱
+  _extract(fetchPromise) {
+    // 1. 부모 클래스의 _extract를 호출하여 '영어 자막'을 먼저 다 로드함.
+    return super._extract(fetchPromise).then(() => {
+      
+      // 2. 로드가 끝나면 바로 '준비 완료(READY)' 상태가 되어 화면에 영어가 뜸.
+      console.log("영어 자막 로드 완료. 백그라운드 번역 시작...");
+      
+      // 3. [중요] await 없이 비동기로 번역 함수를 실행 (Fire and Forget)
+      // 이렇게 해야 사용자는 기다리지 않고 바로 영상을 볼 수 있음.
+      runStreamTranslation(this); 
+      
+      // 4. 즉시 Promise를 리턴하여 넷플릭스 플레이어에게 "나 준비됐어!"라고 알림
+      return Promise.resolve();
+    });
+  }
+}
+// ================= [스트리밍 로직 끝] =================
+
 // textTracks: manifest.textTracks
 const buildSubtitleList = textTracks => {
   const dummy = new DummySubtitle();
   dummy.activate();
 
-  // sorted by language in alphabetical order (to align with official UI)
   const subs = textTracks
     .filter(t => !SubtitleFactory.isNoneTrack(t))
     .map(t => SubtitleFactory.build(t))
     .filter(t => t !== null);
+
+  // [추가된 로직] 영어 자막을 찾아서 'AI 한국어' 트랙으로 복제 생성
+  const englishSubTrack = textTracks.find(t => t.language === 'en');
+  if (englishSubTrack) {
+    // 영어 트랙 정보를 가져와서 AI 클래스로 생성
+    const aiSub = new AiTranslatedSubtitle(
+      'AI 한국어 (Beta)', // 메뉴에 표시될 이름
+      'ko-ai',            // 고유 코드
+      Object.values(englishSubTrack.ttDownloadables['dfxp-ls-sdh'].downloadUrls || englishSubTrack.ttDownloadables['dfxp-ls-sdh'].urls.map(u=>u.url)), 
+      false
+    );
+    // 리스트의 맨 앞에 추가 (잘 보이게)
+    subs.unshift(aiSub);
+  }
+
   return subs.concat(dummy);
 };
 
