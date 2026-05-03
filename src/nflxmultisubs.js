@@ -768,24 +768,45 @@ const buildSubtitleList = textTracks => {
 
   // [추가된 로직] 번역 가능한 자막 트랙으로 AI 한국어 트랙 생성
   // 우선순위: 영어 > 일본어 > 중국어 > 가장 첫번째 텍스트 트랙
-  const PREFERRED_LANGS = ['en', 'ja', 'zh', 'zh-Hans', 'zh-Hant', 'fr', 'es', 'de'];
+  const PREFERRED_LANGS = ['en', 'ja', 'jpn', 'zh', 'zh-Hans', 'zh-Hant', 'fr', 'es', 'de'];
   try {
+    // 실제 트랙 언어 목록 로깅 (디버깅용)
+    const allLangs = textTracks.map(t => t.language);
+    console.log('[NflxMultiSubs] available subtitle languages:', allLangs);
+
+    // 한국어 제외한 모든 텍스트 트랙 중 우선순위 언어 먼저, 없으면 첫 번째
     const sourceTrack =
       PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l)).find(Boolean) ||
-      textTracks.find(t => t.ttDownloadables && t.ttDownloadables['dfxp-ls-sdh'] && t.language !== 'ko');
+      textTracks.find(t =>
+        t.ttDownloadables &&
+        t.ttDownloadables['dfxp-ls-sdh'] &&
+        t.language !== 'ko' &&
+        !SubtitleFactory.isNoneTrack(t)
+      );
+
+    console.log('[NflxMultiSubs] selected source track:', sourceTrack?.language, sourceTrack?.languageDescription);
 
     if (sourceTrack) {
-      const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables['dfxp-ls-sdh'];
+      // dfxp-ls-sdh 먼저 시도, 없으면 다른 포맷 fallback
+      const FORMATS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc', 'webvtt-lssdh-ios8'];
       let urls = [];
-      if (d) {
-        if (d.downloadUrls) urls = Object.values(d.downloadUrls);
-        else if (d.urls) urls = d.urls.map(u => u.url);
+      let usedFormat = null;
+      for (const fmt of FORMATS) {
+        const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables[fmt];
+        if (!d) continue;
+        if (d.downloadUrls) { urls = Object.values(d.downloadUrls); usedFormat = fmt; break; }
+        if (d.urls && d.urls.length) { urls = d.urls.map(u => u.url); usedFormat = fmt; break; }
       }
+      console.log('[NflxMultiSubs] using format:', usedFormat, 'urls count:', urls.length);
       if (urls.length > 0) {
         const srcLang = sourceTrack.language || '?';
         const aiSub = new AiTranslatedSubtitle(`AI 한국어 (${srcLang})`, 'ko-ai', urls, false, srcLang);
         subs.unshift(aiSub);
+      } else {
+        console.warn('[NflxMultiSubs] source track has no usable URLs, available downloadables:', Object.keys(sourceTrack.ttDownloadables || {}));
       }
+    } else {
+      console.warn('[NflxMultiSubs] no suitable source track found for AI translation');
     }
   } catch (e) {
     console.error('[NflxMultiSubs] AI 트랙 생성 실패 (무시):', e);
