@@ -350,3 +350,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })();
   return true; // keep message channel open for async response
 });
+
+// Messages from externally-connectable page scripts (nflxmultisubs.js injected into netflix.com)
+// These arrive on onMessageExternal, NOT onMessage
+chrome.runtime.onMessageExternal && chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    const gSettings = await loadSettings();
+
+    if (msg.action === 'copilot_translate') {
+      try {
+        const result = await handleCopilotTranslate(gSettings, msg.messages);
+        sendResponse({ ok: true, data: result });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return;
+    }
+
+    sendResponse({ ok: false, error: 'Unknown action' });
+  })();
+  return true;
+});
