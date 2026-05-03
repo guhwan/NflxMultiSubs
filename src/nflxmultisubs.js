@@ -834,6 +834,12 @@ const buildSubtitleList = textTracks => {
       );
 
     console.log('[NflxMultiSubs] selected source track:', sourceTrack?.language, sourceTrack?.languageDescription);
+    // 전체 downloadable 포맷 로깅 (어떤 포맷이 있는지 확인)
+    if (sourceTrack) {
+      console.log('[NflxMultiSubs] all downloadable formats:', JSON.stringify(
+        Object.entries(sourceTrack.ttDownloadables || {}).map(([k,v]) => ({ fmt: k, isImage: !!v.isImage, hasUrls: !!(v.downloadUrls || (v.urls && v.urls.length)) }))
+      ));
+    }
 
     if (sourceTrack) {
       const FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
