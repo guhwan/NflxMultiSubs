@@ -739,17 +739,22 @@ const buildSubtitleList = textTracks => {
     .filter(t => t !== null);
 
   // [추가된 로직] 영어 자막을 찾아서 'AI 한국어' 트랙으로 복제 생성
-  const englishSubTrack = textTracks.find(t => t.language === 'en');
-  if (englishSubTrack) {
-    // 영어 트랙 정보를 가져와서 AI 클래스로 생성
-    const aiSub = new AiTranslatedSubtitle(
-      'AI 한국어 (Beta)', // 메뉴에 표시될 이름
-      'ko-ai',            // 고유 코드
-      Object.values(englishSubTrack.ttDownloadables['dfxp-ls-sdh'].downloadUrls || englishSubTrack.ttDownloadables['dfxp-ls-sdh'].urls.map(u=>u.url)), 
-      false
-    );
-    // 리스트의 맨 앞에 추가 (잘 보이게)
-    subs.unshift(aiSub);
+  try {
+    const englishSubTrack = textTracks.find(t => t.language === 'en');
+    if (englishSubTrack) {
+      const d = englishSubTrack.ttDownloadables && englishSubTrack.ttDownloadables['dfxp-ls-sdh'];
+      let urls = [];
+      if (d) {
+        if (d.downloadUrls) urls = Object.values(d.downloadUrls);
+        else if (d.urls) urls = d.urls.map(u => u.url);
+      }
+      if (urls.length > 0) {
+        const aiSub = new AiTranslatedSubtitle('AI 한국어 (Beta)', 'ko-ai', urls, false);
+        subs.unshift(aiSub);
+      }
+    }
+  } catch (e) {
+    console.error('[NflxMultiSubs] AI 트랙 생성 실패 (무시):', e);
   }
 
   return subs.concat(dummy);
