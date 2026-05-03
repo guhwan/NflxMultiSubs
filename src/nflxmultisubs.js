@@ -260,9 +260,18 @@ class TextSubtitle extends SubtitleBase {
               };
               extractTextRecur(line);
 
-              // convert microseconds to seconds
-              const begin = parseInt(line.getAttribute('begin')) / 10000000;
-              const end = parseInt(line.getAttribute('end')) / 10000000;
+              // convert time: microseconds integer OR HH:MM:SS.mmm timecode
+              const parseBeginEnd = t => {
+                if (!t) return 0;
+                const tc = t.match(/^(\d+):(\d+):(\d+)\.(\d+)/);
+                if (tc) return +tc[1]*3600 + +tc[2]*60 + +tc[3] + parseFloat('0.'+tc[4]);
+                const fc = t.match(/^(\d+):(\d+):(\d+):(\d+)/);
+                if (fc) return +fc[1]*3600 + +fc[2]*60 + +fc[3] + +fc[4]/30;
+                const n = parseInt(t);
+                return isNaN(n) ? 0 : n / 10000000;
+              };
+              const begin = parseBeginEnd(line.getAttribute('begin'));
+              const end = parseBeginEnd(line.getAttribute('end'));
               return { id, begin, end, text };
             }
           );
@@ -805,26 +814,30 @@ class AiTranslatedSubtitle extends TextSubtitle {
   }
 
   _extract(fetchPromise) {
-    // fetch 응답을 두 번 써야 하므로 텍스트로 미리 읽어둠
     const textPromise = fetchPromise.then(r => r.text());
 
-    // 부모 클래스에 text Response를 넘겨서 파싱 시도
     return super._extract(textPromise.then(txt => new Response(txt, { headers: { 'Content-Type': 'text/plain' } }))).then(() => {
-      if (this.lines && this.lines.length > 0) {
+      // 타이밍 값이 유효한지 확인 (imsc1.1은 HH:MM:SS 형식이라 parseInt로 파싱하면 begin=0이 됨)
+      const hasValidTiming = this.lines && this.lines.some(l => l.begin > 0 || l.end > 0);
+      if (this.lines && this.lines.length > 0 && hasValidTiming) {
         console.log(`[NflxMultiSubs] 자막 로드 완료 (${this.lines.length}줄). 번역 시작...`);
         runStreamTranslation(this);
         return Promise.resolve();
       }
-      // 기본 파서 실패 — getElementsByTagName('p') 로 fallback
+      // 기본 파서 실패 또는 타이밍=0 — 정확한 시간 파서로 fallback
       return textPromise.then(xmlText => {
-        // 실제 내용 앞부분 로깅 (이미지 ZIP인지 텍스트 XML인지 확인)
         console.log('[NflxMultiSubs] downloaded content (first 300 chars):', xmlText.slice(0, 300));
         const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
         const pNodes = Array.from(xml.getElementsByTagName('p'));
         const parseTime = t => {
           if (!t) return 0;
-          const tc = t.match(/(\d+):(\d+):(\d+)[.:]+(\d+)/);
+          // HH:MM:SS.mmm
+          const tc = t.match(/^(\d+):(\d+):(\d+)\.(\d+)/);
           if (tc) return +tc[1]*3600 + +tc[2]*60 + +tc[3] + parseFloat('0.'+tc[4]);
+          // HH:MM:SS:FF (프레임 기반)
+          const fc = t.match(/^(\d+):(\d+):(\d+):(\d+)/);
+          if (fc) return +fc[1]*3600 + +fc[2]*60 + +fc[3] + +fc[4]/30;
+          // 숫자만 (마이크로세컨드)
           const n = parseInt(t);
           return isNaN(n) ? 0 : n / 10000000;
         };
@@ -845,7 +858,7 @@ class AiTranslatedSubtitle extends TextSubtitle {
           text: walk(p).trim(),
         })).filter(l => l.text);
 
-        console.log(`[NflxMultiSubs] fallback 파서: ${lines.length}줄`);
+        console.log(`[NflxMultiSubs] fallback 파서: ${lines.length}줄, 첫 줄 begin=${lines[0]?.begin} end=${lines[0]?.end}`);
         this.lines = lines;
         if (lines.length > 0) {
           runStreamTranslation(this);
