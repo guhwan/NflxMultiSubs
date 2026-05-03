@@ -582,7 +582,7 @@ function parseTranslatedArray(rawText, chunkIndex) {
 // --- Provider: Gemini ---
 async function translateWithGemini(originalTexts, chunkIndex) {
   const apiKey = gRenderOptions.aiApiKey;
-  if (!apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다. 플러그인 설정에서 API 키를 입력해주세요.');
+  if (!apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다.');
   const model = gRenderOptions.aiModel || 'gemini-2.0-flash';
   const prompt = buildTranslationPrompt(originalTexts);
   const response = await fetch(
@@ -593,15 +593,18 @@ async function translateWithGemini(originalTexts, chunkIndex) {
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
     }
   );
-  const data = await response.json();
+  const body = await response.text();
+  if (!response.ok) throw new Error(`Gemini API 오류 (${response.status}) model=${model}: ${body}`);
+  const data = JSON.parse(body);
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  if (!rawText) throw new Error(`Gemini 응답 비어 있음. 응답: ${body.slice(0, 200)}`);
   return parseTranslatedArray(rawText, chunkIndex);
 }
 
 // --- Provider: OpenAI ---
 async function translateWithOpenAI(originalTexts, chunkIndex) {
   const apiKey = gRenderOptions.aiApiKey;
-  if (!apiKey) throw new Error('OpenAI API 키가 설정되지 않았습니다. 플러그인 설정에서 API 키를 입력해주세요.');
+  if (!apiKey) throw new Error('OpenAI API 키가 설정되지 않았습니다.');
   const model = gRenderOptions.aiModel || 'gpt-4o-mini';
   const prompt = buildTranslationPrompt(originalTexts);
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -610,14 +613,13 @@ async function translateWithOpenAI(originalTexts, chunkIndex) {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-    }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.2 }),
   });
-  const data = await response.json();
+  const body = await response.text();
+  if (!response.ok) throw new Error(`OpenAI API 오류 (${response.status}): ${body.slice(0, 200)}`);
+  const data = JSON.parse(body);
   const rawText = data.choices?.[0]?.message?.content || '';
+  if (!rawText) throw new Error(`OpenAI 응답 비어 있음`);
   return parseTranslatedArray(rawText, chunkIndex);
 }
 
