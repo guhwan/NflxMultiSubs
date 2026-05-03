@@ -696,6 +696,9 @@ async function runStreamTranslation(subtitleInstance) {
         }
       }
 
+      // 렌더러에 변경 되었다고 알림 → 화면 업데이트
+      gRendererLoop && gRendererLoop.setRenderDirty();
+
       updateProgressUI(chunkEnd, textLines.length);
       console.log(`[진행률] ${chunkEnd} / ${textLines.length} 완료`);
       await delay(800);
