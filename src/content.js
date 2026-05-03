@@ -58,6 +58,19 @@ window.addEventListener('message', evt => {
       gMsgPort.postMessage({ stopPlayback: 1 });
     }
   }
+  else if (evt.data.action === 'cache_read') {
+    chrome.storage.local.get([evt.data.key], result => {
+      window.postMessage({
+        namespace: 'nflxmultisubs',
+        action: 'cache_read_response',
+        reqId: evt.data.reqId,
+        value: result[evt.data.key] || null,
+      }, '*');
+    });
+  }
+  else if (evt.data.action === 'cache_write') {
+    chrome.storage.local.set({ [evt.data.key]: evt.data.value });
+  }
   else if (evt.data.action === 'copilot_translate') {
     const { reqId, messages } = evt.data;
     // Content scripts can fetch external URLs directly (host_permissions cover the Copilot API)

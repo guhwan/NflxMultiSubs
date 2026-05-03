@@ -554,6 +554,41 @@ function updateProgressUI(current, total, isComplete = false, errorMsg = null, i
   }
 }
 
+// =============================================================================
+// 번역 캐시 (chrome.storage.local via content.js relay)
+// =============================================================================
+function cacheKey(movieId, srcLang) {
+  return `ai_cache_${movieId}_${srcLang}`;
+}
+
+function getCachedTranslation(movieId, srcLang) {
+  return new Promise(resolve => {
+    const reqId = `cache_read_${Date.now()}`;
+    const key = cacheKey(movieId, srcLang);
+    const handler = evt => {
+      if (!evt.data || evt.data.namespace !== 'nflxmultisubs') return;
+      if (evt.data.action !== 'cache_read_response' || evt.data.reqId !== reqId) return;
+      window.removeEventListener('message', handler);
+      resolve(evt.data.value); // null 또는 [{id, text}, ...]
+    };
+    window.addEventListener('message', handler);
+    window.postMessage({ namespace: 'nflxmultisubs', action: 'cache_read', reqId, key }, '*');
+    // 3초 타임아웃 대비
+    setTimeout(() => { window.removeEventListener('message', handler); resolve(null); }, 3000);
+  });
+}
+
+function setCachedTranslation(movieId, srcLang, lines) {
+  const key = cacheKey(movieId, srcLang);
+  const value = lines.map(l => ({ id: l.id, text: l.text }));
+  window.postMessage({ namespace: 'nflxmultisubs', action: 'cache_write', key, value }, '*');
+}
+
+function getMovieId() {
+  const m = window.location.pathname.match(/\/watch\/(\d+)/);
+  return m ? m[1] : null;
+}
+
 // Build translation prompt shared across providers
 function buildTranslationPrompt(originalTexts, srcLang = 'en') {
   const langNames = {
@@ -683,6 +718,24 @@ async function runStreamTranslation(subtitleInstance) {
   }
 
   const srcLang = subtitleInstance.srcLang || 'en';
+  const movieId = getMovieId();
+
+  // 캐시 확인
+  if (movieId) {
+    const cached = await getCachedTranslation(movieId, srcLang);
+    if (cached && cached.length === textLines.length) {
+      console.log(`[AI 번역] 캐시 히트! (${cached.length}줄) 저장된 번역 로드...`);
+      cached.forEach(c => {
+        const line = textLines.find(l => l.id === c.id);
+        if (line) line.text = c.text;
+      });
+      subtitleInstance.lastRenderedIds = null;
+      gRendererLoop && gRendererLoop.setRenderDirty();
+      updateProgressUI(textLines.length, textLines.length, true);
+      return;
+    }
+  }
+
   subtitleInstance.isTranslating = true;
   const CHUNK_SIZE = 50;
   let failCount = 0;
@@ -728,6 +781,11 @@ async function runStreamTranslation(subtitleInstance) {
     updateProgressUI(textLines.length, textLines.length, false, null, true, lastError?.message || '모든 쫑크 실패');
   } else {
     subtitleInstance.isTranslating = false;
+    // 캐시 저장
+    if (movieId) {
+      setCachedTranslation(movieId, srcLang, textLines);
+      console.log(`[AI 번역] 번역 결과 캐시 저장 (movieId=${movieId}, ${textLines.length}줄)`);
+    }
     updateProgressUI(textLines.length, textLines.length, true);
     console.log('모든 번역 완료!');
   }
