@@ -759,6 +759,8 @@ class AiTranslatedSubtitle extends TextSubtitle {
       }
       // 기본 파서 실패 — getElementsByTagName('p') 로 fallback
       return textPromise.then(xmlText => {
+        // 실제 내용 앞부분 로깅 (이미지 ZIP인지 텍스트 XML인지 확인)
+        console.log('[NflxMultiSubs] downloaded content (first 300 chars):', xmlText.slice(0, 300));
         const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
         const pNodes = Array.from(xml.getElementsByTagName('p'));
         const parseTime = t => {
