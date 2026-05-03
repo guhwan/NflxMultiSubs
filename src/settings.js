@@ -180,8 +180,20 @@ function renderVersion() {
 const AI_PROVIDER_MODELS = {
   gemini: 'gemini-2.0-flash',
   openai: 'gpt-4o-mini',
-  copilot: 'gpt-4o',
+  copilot: 'gpt-5-mini',
 };
+
+const COPILOT_MODELS = [
+  'gpt-5-mini',
+  'gpt-5',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'o3-mini',
+  'o3',
+  'claude-3.7-sonnet',
+  'claude-3.5-sonnet',
+  'gemini-2.0-flash',
+];
 
 const AI_APIKEY_HINTS = {
   gemini: 'Get your key at aistudio.google.com/app/apikey',
@@ -220,8 +232,18 @@ function renderAiSettings() {
   modelField.value = settings.aiModel || AI_PROVIDER_MODELS[provider] || '';
   modelField.placeholder = AI_PROVIDER_MODELS[provider] || '';
 
-  // Hide model input for Copilot (server decides)
+  // Hide model input for Copilot (use dropdown instead)
   document.getElementById('ai-model-section').style.display = provider === 'copilot' ? 'none' : '';
+
+  // Copilot model dropdown
+  const copilotModelSection = document.getElementById('ai-copilot-model-section');
+  if (provider === 'copilot' && copilotModelSection) {
+    copilotModelSection.style.display = '';
+    const sel = document.getElementById('ai-copilot-model-select');
+    sel.value = settings.aiModel || 'gpt-5-mini';
+  } else if (copilotModelSection) {
+    copilotModelSection.style.display = 'none';
+  }
 }
 
 function renderCopilotStatus() {
@@ -383,4 +405,12 @@ window.addEventListener('load', evt => {
 
   document.getElementById('copilot-login-btn').addEventListener('click', startCopilotLogin);
   document.getElementById('copilot-logout-btn').addEventListener('click', copilotLogout);
+
+  const copilotModelSel = document.getElementById('ai-copilot-model-select');
+  if (copilotModelSel) {
+    copilotModelSel.addEventListener('change', () => {
+      settings = Object.assign(settings, { aiModel: copilotModelSel.value });
+      uploadSettings();
+    });
+  }
 });

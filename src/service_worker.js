@@ -316,7 +316,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         gSettings.githubCopilotToken = '';
         gSettings.githubCopilotTokenExpiry = 0;
         gSettings.aiProvider = 'copilot';
-        gSettings.aiModel = gSettings.aiModel || 'gpt-4o';
+        gSettings.aiModel = 'gpt-5-mini';
         saveSettings(gSettings);
         dispatchSettings(gSettings);
         sendResponse({ ok: true });
