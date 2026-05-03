@@ -555,9 +555,15 @@ function updateProgressUI(current, total, isComplete = false, errorMsg = null, i
 }
 
 // Build translation prompt shared across providers
-function buildTranslationPrompt(originalTexts) {
-  return `Translate these subtitles from English to Korean naturally.
-Context: Netflix Movie.
+function buildTranslationPrompt(originalTexts, srcLang = 'en') {
+  const langNames = {
+    'en': 'English', 'ja': 'Japanese', 'zh': 'Chinese',
+    'zh-Hans': 'Chinese (Simplified)', 'zh-Hant': 'Chinese (Traditional)',
+    'fr': 'French', 'es': 'Spanish', 'de': 'German',
+  };
+  const srcName = langNames[srcLang] || srcLang;
+  return `Translate these subtitles from ${srcName} to Korean naturally.
+Context: Netflix Movie/Show.
 Rules:
 1. Keep exactly ${originalTexts.length} lines.
 2. No line numbers.
@@ -580,11 +586,11 @@ function parseTranslatedArray(rawText, chunkIndex) {
 }
 
 // --- Provider: Gemini ---
-async function translateWithGemini(originalTexts, chunkIndex) {
+async function translateWithGemini(originalTexts, chunkIndex, srcLang = 'en') {
   const apiKey = gRenderOptions.aiApiKey;
   if (!apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다.');
   const model = gRenderOptions.aiModel || 'gemini-2.0-flash';
-  const prompt = buildTranslationPrompt(originalTexts);
+  const prompt = buildTranslationPrompt(originalTexts, srcLang);
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -602,11 +608,11 @@ async function translateWithGemini(originalTexts, chunkIndex) {
 }
 
 // --- Provider: OpenAI ---
-async function translateWithOpenAI(originalTexts, chunkIndex) {
+async function translateWithOpenAI(originalTexts, chunkIndex, srcLang = 'en') {
   const apiKey = gRenderOptions.aiApiKey;
   if (!apiKey) throw new Error('OpenAI API 키가 설정되지 않았습니다.');
   const model = gRenderOptions.aiModel || 'gpt-4o-mini';
-  const prompt = buildTranslationPrompt(originalTexts);
+  const prompt = buildTranslationPrompt(originalTexts, srcLang);
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -624,8 +630,8 @@ async function translateWithOpenAI(originalTexts, chunkIndex) {
 }
 
 // --- Provider: GitHub Copilot (relayed via content.js → service_worker) ---
-async function translateWithCopilot(originalTexts, chunkIndex) {
-  const prompt = buildTranslationPrompt(originalTexts);
+async function translateWithCopilot(originalTexts, chunkIndex, srcLang = 'en') {
+  const prompt = buildTranslationPrompt(originalTexts, srcLang);
   const messages = [{ role: 'user', content: prompt }];
   const reqId = `copilot_${Date.now()}_${chunkIndex}`;
 
@@ -657,14 +663,14 @@ async function translateWithCopilot(originalTexts, chunkIndex) {
 }
 
 // Route to the right provider
-async function translateChunk(originalTexts, chunkIndex) {
+async function translateChunk(originalTexts, chunkIndex, srcLang) {
   const provider = gRenderOptions.aiProvider || 'gemini';
   switch (provider) {
-    case 'openai': return translateWithOpenAI(originalTexts, chunkIndex);
-    case 'copilot': return translateWithCopilot(originalTexts, chunkIndex);
+    case 'openai': return translateWithOpenAI(originalTexts, chunkIndex, srcLang);
+    case 'copilot': return translateWithCopilot(originalTexts, chunkIndex, srcLang);
     case 'gemini':
     default:
-      return translateWithGemini(originalTexts, chunkIndex);
+      return translateWithGemini(originalTexts, chunkIndex, srcLang);
   }
 }
 
@@ -676,11 +682,12 @@ async function runStreamTranslation(subtitleInstance) {
     return;
   }
 
+  const srcLang = subtitleInstance.srcLang || 'en';
   subtitleInstance.isTranslating = true;
   const CHUNK_SIZE = 50;
   let failCount = 0;
   let lastError = null;
-  console.log(`[스트리밍 번역 시작] provider=${gRenderOptions.aiProvider || 'gemini'} / 총 ${textLines.length}줄`);
+  console.log(`[스트리밍 번역 시작] provider=${gRenderOptions.aiProvider || 'gemini'} srcLang=${srcLang} / 총 ${textLines.length}줄`);
 
   for (let i = 0; i < textLines.length; i += CHUNK_SIZE) {
     const chunkEnd = Math.min(i + CHUNK_SIZE, textLines.length);
@@ -688,7 +695,7 @@ async function runStreamTranslation(subtitleInstance) {
     const originalTexts = chunk.map(l => l.text);
 
     try {
-      const translatedArray = await translateChunk(originalTexts, i);
+      const translatedArray = await translateChunk(originalTexts, i, srcLang);
 
       // 영문 + 한글 합치기 (Dual Subtitle Logic)
       for (let j = 0; j < chunk.length; j++) {
@@ -727,10 +734,11 @@ async function runStreamTranslation(subtitleInstance) {
 }
 
 class AiTranslatedSubtitle extends TextSubtitle {
-  constructor(lang, bcp47, urls, isCaption) {
+  constructor(lang, bcp47, urls, isCaption, srcLang = 'en') {
     super(lang, bcp47, urls, isCaption);
     this.isAi = true;
     this.isTranslating = false;
+    this.srcLang = srcLang; // 소스 언어 (진단 목적)
   }
 
   // 번역 중에는 캐시 무시하고 항상 재렌더
@@ -758,18 +766,24 @@ const buildSubtitleList = textTracks => {
     .map(t => SubtitleFactory.build(t))
     .filter(t => t !== null);
 
-  // [추가된 로직] 영어 자막을 찾아서 'AI 한국어' 트랙으로 복제 생성
+  // [추가된 로직] 번역 가능한 자막 트랙으로 AI 한국어 트랙 생성
+  // 우선순위: 영어 > 일본어 > 중국어 > 가장 첫번째 텍스트 트랙
+  const PREFERRED_LANGS = ['en', 'ja', 'zh', 'zh-Hans', 'zh-Hant', 'fr', 'es', 'de'];
   try {
-    const englishSubTrack = textTracks.find(t => t.language === 'en');
-    if (englishSubTrack) {
-      const d = englishSubTrack.ttDownloadables && englishSubTrack.ttDownloadables['dfxp-ls-sdh'];
+    const sourceTrack =
+      PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l)).find(Boolean) ||
+      textTracks.find(t => t.ttDownloadables && t.ttDownloadables['dfxp-ls-sdh'] && t.language !== 'ko');
+
+    if (sourceTrack) {
+      const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables['dfxp-ls-sdh'];
       let urls = [];
       if (d) {
         if (d.downloadUrls) urls = Object.values(d.downloadUrls);
         else if (d.urls) urls = d.urls.map(u => u.url);
       }
       if (urls.length > 0) {
-        const aiSub = new AiTranslatedSubtitle('AI 한국어 (Beta)', 'ko-ai', urls, false);
+        const srcLang = sourceTrack.language || '?';
+        const aiSub = new AiTranslatedSubtitle(`AI 한국어 (${srcLang})`, 'ko-ai', urls, false, srcLang);
         subs.unshift(aiSub);
       }
     }
