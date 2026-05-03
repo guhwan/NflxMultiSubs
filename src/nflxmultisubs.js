@@ -696,7 +696,8 @@ async function runStreamTranslation(subtitleInstance) {
         }
       }
 
-      // 렌더러에 변경 되었다고 알림 → 화면 업데이트
+      // lastRenderedIds 캐시 초기화 + dirty 플래그 설정 → 화면 즉시 업데이트
+      subtitleInstance.lastRenderedIds = null;
       gRendererLoop && gRendererLoop.setRenderDirty();
 
       updateProgressUI(chunkEnd, textLines.length);
