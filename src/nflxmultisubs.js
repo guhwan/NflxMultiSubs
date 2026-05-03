@@ -519,7 +519,7 @@ class SubtitleFactory {
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 진행률 박스 UI 생성 함수
-function updateProgressUI(current, total, isComplete = false) {
+function updateProgressUI(current, total, isComplete = false, errorMsg = null, isFatalError = false) {
   let progressBox = document.getElementById('ai-progress-box');
   if (!progressBox) {
     progressBox = document.createElement('div');
@@ -529,12 +529,21 @@ function updateProgressUI(current, total, isComplete = false) {
   }
 
   const percent = Math.round((current / total) * 100);
-  
-  if (isComplete) {
+
+  if (isFatalError) {
+    progressBox.style.borderLeftColor = '#ff4444';
+    progressBox.innerHTML = `❌ 번역 실패<br><span style="font-size:11px;font-weight:normal;color:#ffaaaa">${errorMsg || ''}</span><br><span style="font-size:10px;color:#aaa">플러그인 설정에서 AI Provider / API 키를 확인하세요</span>`;
+    setTimeout(() => { progressBox.style.opacity = 0; }, 10000);
+    setTimeout(() => { progressBox.remove(); }, 11000);
+  } else if (isComplete) {
     progressBox.innerHTML = `✅ 번역 완료! 즐겁게 감상하세요.`;
     setTimeout(() => { progressBox.style.opacity = 0; }, 5000);
     setTimeout(() => { progressBox.remove(); }, 6000);
+  } else if (errorMsg) {
+    progressBox.style.borderLeftColor = '#ffaa00';
+    progressBox.innerHTML = `⚠️ 쫑크 실패 (${percent}%)<br><span style="font-size:11px;font-weight:normal;color:#ffdd88">${errorMsg}</span>`;
   } else {
+    progressBox.style.borderLeftColor = '#e50914';
     progressBox.innerHTML = `
       ⚡ 실시간 번역 중... (${percent}%) <br>
       <span style="font-size:12px; color:#ddd; font-weight:normal;">
@@ -645,10 +654,15 @@ async function translateChunk(originalTexts, chunkIndex) {
 // 덩어리(Chunk) 단위로 번역해서 바로바로 적용하는 함수
 async function runStreamTranslation(subtitleInstance) {
   const textLines = subtitleInstance.lines;
-  if (!textLines || textLines.length === 0) return;
+  if (!textLines || textLines.length === 0) {
+    console.warn('[AI 번역] textLines 비어 있음 — 중단');
+    return;
+  }
 
-  const CHUNK_SIZE = 50; 
-  console.log(`[스트리밍 번역 시작] 총 ${textLines.length}줄`);
+  const CHUNK_SIZE = 50;
+  let failCount = 0;
+  let lastError = null;
+  console.log(`[스트리밍 번역 시작] provider=${gRenderOptions.aiProvider || 'gemini'} / 총 ${textLines.length}줄`);
 
   for (let i = 0; i < textLines.length; i += CHUNK_SIZE) {
     const chunkEnd = Math.min(i + CHUNK_SIZE, textLines.length);
@@ -669,16 +683,24 @@ async function runStreamTranslation(subtitleInstance) {
 
       updateProgressUI(chunkEnd, textLines.length);
       console.log(`[진행률] ${chunkEnd} / ${textLines.length} 완료`);
-
       await delay(800);
+
     } catch (error) {
-      console.error(`Chunk ${i} 번역 실패 (원문 유지):`, error);
-      // 실패해도 멈추지 않고 다음 덩어리로 넘어감
+      failCount++;
+      lastError = error;
+      console.error(`Chunk ${i} 번역 실패:`, error.message || error);
+      updateProgressUI(chunkEnd, textLines.length, false, error.message || String(error));
+      await delay(1000); // 실패도 다음 청크전 짧게 대기 (즐치 완료 막기)
     }
   }
 
-  updateProgressUI(textLines.length, textLines.length, true);
-  console.log('모든 번역 완료!');
+  if (failCount === Math.ceil(textLines.length / CHUNK_SIZE)) {
+    // 전청크 실패 — 오류 메시지 표시
+    updateProgressUI(textLines.length, textLines.length, false, null, true, lastError?.message || '모든 쫑크 실패');
+  } else {
+    updateProgressUI(textLines.length, textLines.length, true);
+    console.log('모든 번역 완료!');
+  }
 }
 
 class AiTranslatedSubtitle extends TextSubtitle {
