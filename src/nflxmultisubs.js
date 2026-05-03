@@ -747,10 +747,52 @@ class AiTranslatedSubtitle extends TextSubtitle {
   }
 
   _extract(fetchPromise) {
-    return super._extract(fetchPromise).then(() => {
-      console.log('영어 자막 로드 완료. 백그라운드 번역 시작...');
-      runStreamTranslation(this);
-      return Promise.resolve();
+    // fetch 응답을 두 번 써야 하므로 텍스트로 미리 읽어둠
+    const textPromise = fetchPromise.then(r => r.text());
+
+    // 부모 클래스에 text Response를 넘겨서 파싱 시도
+    return super._extract(textPromise.then(txt => new Response(txt, { headers: { 'Content-Type': 'text/plain' } }))).then(() => {
+      if (this.lines && this.lines.length > 0) {
+        console.log(`[NflxMultiSubs] 자막 로드 완료 (${this.lines.length}줄). 번역 시작...`);
+        runStreamTranslation(this);
+        return Promise.resolve();
+      }
+      // 기본 파서 실패 — getElementsByTagName('p') 로 fallback
+      return textPromise.then(xmlText => {
+        const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+        const pNodes = Array.from(xml.getElementsByTagName('p'));
+        const parseTime = t => {
+          if (!t) return 0;
+          const tc = t.match(/(\d+):(\d+):(\d+)[.:]+(\d+)/);
+          if (tc) return +tc[1]*3600 + +tc[2]*60 + +tc[3] + parseFloat('0.'+tc[4]);
+          const n = parseInt(t);
+          return isNaN(n) ? 0 : n / 10000000;
+        };
+        const walk = node => {
+          let text = '';
+          [].forEach.call(node.childNodes, n => {
+            if (n.nodeType === Node.ELEMENT_NODE)
+              n.nodeName.toLowerCase().includes('br') ? (text += '\n') : (text += walk(n));
+            else if (n.nodeType === Node.TEXT_NODE)
+              text += n.nodeValue + ' ';
+          });
+          return text;
+        };
+        const lines = pNodes.map((p, id) => ({
+          id,
+          begin: parseTime(p.getAttribute('begin')),
+          end: parseTime(p.getAttribute('end')),
+          text: walk(p).trim(),
+        })).filter(l => l.text);
+
+        console.log(`[NflxMultiSubs] fallback 파서: ${lines.length}줄`);
+        this.lines = lines;
+        if (lines.length > 0) {
+          runStreamTranslation(this);
+        } else {
+          console.warn('[NflxMultiSubs] fallback 파서도 0줄 — 이미지 자막이거나 다른 포맷일 수 있음');
+        }
+      }).catch(e => console.error('[NflxMultiSubs] fallback 파서 실패:', e));
     });
   }
 }
@@ -775,52 +817,41 @@ const buildSubtitleList = textTracks => {
     console.log('[NflxMultiSubs] available subtitle languages:', allLangs);
 
     // 한국어 제외한 모든 텍스트 트랙 중 우선순위 언어 먼저, 없으면 첫 번째
-    // 조건: 텍스트 포맷(dfxp-ls-sdh 등)이 있는 트랙만 선택
-    const hasTextFormat = t => {
-      const TEXT_FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
-      return TEXT_FMTS.some(fmt => {
+    // dfxp-ls-sdh는 isImage 여부와 관계없이 항상 후보 (텍스트 콘텐트를 포함할 수 있음)
+    const hasDownloadableFormat = t => {
+      const FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
+      return FMTS.some(fmt => {
         const d = t.ttDownloadables && t.ttDownloadables[fmt];
-        return d && !d.isImage && (d.downloadUrls || (d.urls && d.urls.length));
+        return d && (d.downloadUrls || (d.urls && d.urls.length));
       });
     };
     const sourceTrack =
-      PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l && hasTextFormat(t))).find(Boolean) ||
+      PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l && hasDownloadableFormat(t))).find(Boolean) ||
       textTracks.find(t =>
         t.language !== 'ko' &&
         !SubtitleFactory.isNoneTrack(t) &&
-        hasTextFormat(t)
+        hasDownloadableFormat(t)
       );
 
     console.log('[NflxMultiSubs] selected source track:', sourceTrack?.language, sourceTrack?.languageDescription);
 
     if (sourceTrack) {
-      // 이미지 기반 자막인지 확인 (ZIP 포맷 — TextSubtitle로 파싱 불가)
-      const isImageBased = sourceTrack.ttDownloadables &&
-        Object.values(sourceTrack.ttDownloadables).some(d => d.isImage);
-      console.log('[NflxMultiSubs] source track isImageBased:', isImageBased);
-
-      // 텍스트 전용 포맷 우선, 이미지 트랙은 텍스트 포맷만 선택
-      const TEXT_FORMATS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
+      const FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
       let urls = [];
       let usedFormat = null;
-
-      for (const fmt of TEXT_FORMATS) {
+      for (const fmt of FMTS) {
         const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables[fmt];
         if (!d) continue;
-        // 이미지 포맷은 건너뜀
-        if (d.isImage) continue;
         if (d.downloadUrls) { urls = Object.values(d.downloadUrls); usedFormat = fmt; break; }
         if (d.urls && d.urls.length) { urls = d.urls.map(u => u.url); usedFormat = fmt; break; }
       }
       console.log('[NflxMultiSubs] using format:', usedFormat, 'urls count:', urls.length);
-
       if (urls.length > 0) {
         const srcLang = sourceTrack.language || '?';
         const aiSub = new AiTranslatedSubtitle(`AI 한국어 (${srcLang})`, 'ko-ai', urls, false, srcLang);
         subs.unshift(aiSub);
       } else {
-        console.warn('[NflxMultiSubs] 텍스트 기반 URL 없음. 이미지 자막은 AI 번역 불가.');
-        console.warn('[NflxMultiSubs] available downloadables:', JSON.stringify(
+        console.warn('[NflxMultiSubs] 사용 가능한 URL 없음:', JSON.stringify(
           Object.entries(sourceTrack.ttDownloadables || {}).map(([k,v]) => ({ fmt: k, isImage: v.isImage }))
         ));
       }
