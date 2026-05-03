@@ -515,9 +515,7 @@ class SubtitleFactory {
 
 // ================= [AI 번역: 스트리밍 & 버퍼링 모드] =================
 
-const AI_API_KEY = "key"; // 본인 키 확인
-const MODEL_NAME = "gemini-3-flash-preview";
-
+// AI settings are taken from gRenderOptions (synced with chrome.storage via service_worker)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 진행률 박스 UI 생성 함수
@@ -526,7 +524,6 @@ function updateProgressUI(current, total, isComplete = false) {
   if (!progressBox) {
     progressBox = document.createElement('div');
     progressBox.id = 'ai-progress-box';
-    // 방해되지 않게 반투명하고 작게 디자인
     progressBox.style.cssText = "position: fixed; top: 80px; left: 20px; background: rgba(0, 0, 0, 0.7); color: #fff; padding: 10px 15px; z-index: 9999; border-radius: 8px; font-size: 14px; font-weight: bold; border-left: 4px solid #e50914; pointer-events: none; transition: opacity 0.5s;";
     document.body.appendChild(progressBox);
   }
@@ -548,6 +545,103 @@ function updateProgressUI(current, total, isComplete = false) {
   }
 }
 
+// Build translation prompt shared across providers
+function buildTranslationPrompt(originalTexts) {
+  return `Translate these subtitles from English to Korean naturally.
+Context: Netflix Movie.
+Rules:
+1. Keep exactly ${originalTexts.length} lines.
+2. No line numbers.
+3. Keep music/sound effects as is.
+4. Output strictly a JSON array of strings.
+
+Input:
+${JSON.stringify(originalTexts)}`;
+}
+
+// Parse translated JSON array from raw LLM text
+function parseTranslatedArray(rawText, chunkIndex) {
+  try {
+    const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.warn(`Chunk ${chunkIndex} JSON 파싱 실패, 텍스트 모드로 대체`);
+    return rawText.split('\n').filter(t => t.trim());
+  }
+}
+
+// --- Provider: Gemini ---
+async function translateWithGemini(originalTexts, chunkIndex) {
+  const apiKey = gRenderOptions.aiApiKey;
+  if (!apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다. 플러그인 설정에서 API 키를 입력해주세요.');
+  const model = gRenderOptions.aiModel || 'gemini-2.0-flash';
+  const prompt = buildTranslationPrompt(originalTexts);
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    }
+  );
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return parseTranslatedArray(rawText, chunkIndex);
+}
+
+// --- Provider: OpenAI ---
+async function translateWithOpenAI(originalTexts, chunkIndex) {
+  const apiKey = gRenderOptions.aiApiKey;
+  if (!apiKey) throw new Error('OpenAI API 키가 설정되지 않았습니다. 플러그인 설정에서 API 키를 입력해주세요.');
+  const model = gRenderOptions.aiModel || 'gpt-4o-mini';
+  const prompt = buildTranslationPrompt(originalTexts);
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+    }),
+  });
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content || '';
+  return parseTranslatedArray(rawText, chunkIndex);
+}
+
+// --- Provider: GitHub Copilot (relayed via service_worker) ---
+async function translateWithCopilot(originalTexts, chunkIndex) {
+  const prompt = buildTranslationPrompt(originalTexts);
+  const messages = [{ role: 'user', content: prompt }];
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      extensionId,
+      { action: 'copilot_translate', messages },
+      (resp) => {
+        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        if (!resp || !resp.ok) return reject(new Error(resp?.error || 'Copilot 번역 실패'));
+        const rawText = resp.data?.choices?.[0]?.message?.content || '';
+        resolve(parseTranslatedArray(rawText, chunkIndex));
+      }
+    );
+  });
+}
+
+// Route to the right provider
+async function translateChunk(originalTexts, chunkIndex) {
+  const provider = gRenderOptions.aiProvider || 'gemini';
+  switch (provider) {
+    case 'openai': return translateWithOpenAI(originalTexts, chunkIndex);
+    case 'copilot': return translateWithCopilot(originalTexts, chunkIndex);
+    case 'gemini':
+    default:
+      return translateWithGemini(originalTexts, chunkIndex);
+  }
+}
+
 // 덩어리(Chunk) 단위로 번역해서 바로바로 적용하는 함수
 async function runStreamTranslation(subtitleInstance) {
   const textLines = subtitleInstance.lines;
@@ -557,73 +651,26 @@ async function runStreamTranslation(subtitleInstance) {
   console.log(`[스트리밍 번역 시작] 총 ${textLines.length}줄`);
 
   for (let i = 0; i < textLines.length; i += CHUNK_SIZE) {
-    // 1. 번역할 덩어리 자르기
     const chunkEnd = Math.min(i + CHUNK_SIZE, textLines.length);
     const chunk = textLines.slice(i, chunkEnd);
     const originalTexts = chunk.map(l => l.text);
 
-    // 2. 프롬프트 (JSON 배열 형식 유지)
-    const prompt = `
-      Translate these subtitles from English to Korean naturally.
-      Context: Netflix Movie.
-      Rules:
-      1. Keep exactly ${originalTexts.length} lines.
-      2. No line numbers.
-      3. Keep music/sound effects as is.
-      4. Output strictly a JSON array of strings.
-      
-      Input:
-      ${JSON.stringify(originalTexts)}
-    `;
-
     try {
-      // 3. API 호출
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${AI_API_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
+      const translatedArray = await translateChunk(originalTexts, i);
 
-      const data = await response.json();
-      
-      // 데이터 파싱
-      let translatedArray = [];
-      try {
-        let rawText = data.candidates[0].content.parts[0].text;
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        translatedArray = JSON.parse(rawText);
-      } catch (e) {
-        // 파싱 실패시 줄바꿈으로 시도
-        console.warn(`Chunk ${i} JSON 파싱 실패, 텍스트 모드로 대체`);
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        translatedArray = rawText.split('\n').filter(t => t.trim());
-      }
-
-      // 4. [핵심] 영문 + 한글 합치기 (Dual Subtitle Logic)
+      // 영문 + 한글 합치기 (Dual Subtitle Logic)
       for (let j = 0; j < chunk.length; j++) {
         if (translatedArray[j]) {
-          const original = originalTexts[j].replace(/\n/g, ' '); // 영문 내 불필요한 줄바꿈 제거 (깔끔하게)
+          const original = originalTexts[j].replace(/\n/g, ' ');
           const korean = translatedArray[j];
-          
-          // ✨ 여기서 합칩니다! (위: 영어 / 아래: 한글)
           subtitleInstance.lines[i + j].text = `${original}\n${korean}`;
         }
       }
 
-      // 5. UI 업데이트
       updateProgressUI(chunkEnd, textLines.length);
       console.log(`[진행률] ${chunkEnd} / ${textLines.length} 완료`);
 
-      // 6. 넷플릭스가 변경된 자막을 다시 그리도록 강제 리프레시 신호
-      // (RendererLoop가 dirty flag를 확인하게 함)
-      if (window.__NflxMultiSubs && window.__NflxMultiSubs.rendererLoop) {
-         // 이 부분은 외부에서 접근이 어려울 수 있으므로, 
-         // 단순히 자막 텍스트만 바꿔두면 다음 프레임 렌더링 때 자동 반영됩니다.
-      }
-
-      // API 속도 제한 고려 (0.3초 대기)
       await delay(800);
-
     } catch (error) {
       console.error(`Chunk ${i} 번역 실패 (원문 유지):`, error);
       // 실패해도 멈추지 않고 다음 덩어리로 넘어감
@@ -631,7 +678,7 @@ async function runStreamTranslation(subtitleInstance) {
   }
 
   updateProgressUI(textLines.length, textLines.length, true);
-  console.log("모든 번역 완료!");
+  console.log('모든 번역 완료!');
 }
 
 class AiTranslatedSubtitle extends TextSubtitle {

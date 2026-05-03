@@ -1,5 +1,99 @@
 const kDefaultSettings = require('./default-settings');
 
+// =============================================================================
+// GitHub Copilot OAuth Device Flow
+// =============================================================================
+// GitHub OAuth App credentials (public – device flow requires no secret)
+const GITHUB_CLIENT_ID = 'Iv1.b507a08c87ecfe98'; // GitHub Copilot editor integration client id
+const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
+
+// Start device flow: returns { device_code, user_code, verification_uri, interval, expires_in }
+async function githubStartDeviceFlow() {
+  const resp = await fetch('https://github.com/login/device/code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: 'read:user' }),
+  });
+  if (!resp.ok) throw new Error(`Device flow start failed: ${resp.status}`);
+  return resp.json();
+}
+
+// Poll for OAuth token after user enters device code
+async function githubPollDeviceToken(deviceCode, interval) {
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+  for (let i = 0; i < 60; i++) {
+    await delay((interval || 5) * 1000);
+    const resp = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        device_code: deviceCode,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      }),
+    });
+    const data = await resp.json();
+    if (data.access_token) return data.access_token;
+    if (data.error === 'access_denied') throw new Error('Access denied by user');
+    // authorization_pending or slow_down: keep polling
+  }
+  throw new Error('Device flow timed out');
+}
+
+// Exchange GitHub OAuth token for a short-lived Copilot API token
+async function fetchCopilotToken(oauthToken) {
+  const resp = await fetch(COPILOT_TOKEN_URL, {
+    headers: {
+      'Authorization': `token ${oauthToken}`,
+      'Editor-Version': 'vscode/1.85.0',
+      'Editor-Plugin-Version': 'copilot-chat/0.12.0',
+      'User-Agent': 'GithubCopilot/1.155.0',
+    },
+  });
+  if (!resp.ok) throw new Error(`Copilot token fetch failed: ${resp.status}`);
+  const data = await resp.json();
+  return { token: data.token, expiresAt: data.expires_at }; // expires_at is Unix seconds
+}
+
+// Get a valid Copilot token, refreshing if needed
+async function getValidCopilotToken(settings) {
+  const now = Math.floor(Date.now() / 1000);
+  if (settings.githubCopilotToken && settings.githubCopilotTokenExpiry > now + 60) {
+    return settings.githubCopilotToken;
+  }
+  if (!settings.githubOAuthToken) throw new Error('No GitHub OAuth token – please authenticate via Settings');
+  const { token, expiresAt } = await fetchCopilotToken(settings.githubOAuthToken);
+  // persist refreshed token back into storage
+  settings.githubCopilotToken = token;
+  settings.githubCopilotTokenExpiry = expiresAt;
+  saveSettings(settings);
+  dispatchSettings(settings);
+  return token;
+}
+
+// Proxy a Copilot Chat Completions request from the content script
+async function handleCopilotTranslate(settings, messages) {
+  const copilotToken = await getValidCopilotToken(settings);
+  const model = settings.aiModel || 'gpt-4o-mini';
+  const resp = await fetch('https://api.githubcopilot.com/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${copilotToken}`,
+      'Content-Type': 'application/json',
+      'Copilot-Integration-Id': 'vscode-chat',
+      'Editor-Version': 'vscode/1.85.0',
+      'Editor-Plugin-Version': 'copilot-chat/0.12.0',
+      'User-Agent': 'GithubCopilot/1.155.0',
+    },
+    body: JSON.stringify({ model, messages, temperature: 0.2 }),
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Copilot API error ${resp.status}: ${err}`);
+  }
+  return resp.json();
+}
+
 // return true if valid; otherwise return false
 function validateSettings(settings) {
   const keys = Object.keys(kDefaultSettings);
@@ -194,3 +288,65 @@ else {
     }
   });
 }
+
+// =============================================================================
+// Message-based API (for settings popup, used for device flow + copilot proxy)
+// =============================================================================
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    const gSettings = await loadSettings();
+
+    // --- GitHub device flow: step 1 ---
+    if (msg.action === 'github_start_device_flow') {
+      try {
+        const data = await githubStartDeviceFlow();
+        sendResponse({ ok: true, data });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return;
+    }
+
+    // --- GitHub device flow: step 2 (poll) ---
+    if (msg.action === 'github_poll_device_token') {
+      try {
+        const oauthToken = await githubPollDeviceToken(msg.deviceCode, msg.interval);
+        // save oauth token and clear stale copilot token
+        gSettings.githubOAuthToken = oauthToken;
+        gSettings.githubCopilotToken = '';
+        gSettings.githubCopilotTokenExpiry = 0;
+        saveSettings(gSettings);
+        dispatchSettings(gSettings);
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return;
+    }
+
+    // --- GitHub logout ---
+    if (msg.action === 'github_logout') {
+      gSettings.githubOAuthToken = '';
+      gSettings.githubCopilotToken = '';
+      gSettings.githubCopilotTokenExpiry = 0;
+      saveSettings(gSettings);
+      dispatchSettings(gSettings);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    // --- Copilot translation proxy (called from content script) ---
+    if (msg.action === 'copilot_translate') {
+      try {
+        const result = await handleCopilotTranslate(gSettings, msg.messages);
+        sendResponse({ ok: true, data: result });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return;
+    }
+
+    sendResponse({ ok: false, error: 'Unknown action' });
+  })();
+  return true; // keep message channel open for async response
+});

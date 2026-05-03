@@ -20,6 +20,19 @@ const kDefaultSettings = {
   // bcp47 code of the last used language
   secondaryLanguageLastUsed: '',
   secondaryLanguageLastUsedIsCaption: false,
+
+  // AI Translation settings
+  // aiProvider valid values: 'gemini', 'openai', 'copilot'
+  aiProvider: 'gemini',
+  aiApiKey: '',
+  // model name per provider (e.g. 'gemini-2.0-flash', 'gpt-4o-mini')
+  aiModel: 'gemini-2.0-flash',
+  // GitHub Copilot OAuth token (long-lived, stored after device flow)
+  githubOAuthToken: '',
+  // GitHub Copilot short-lived API token (auto-refreshed)
+  githubCopilotToken: '',
+  // Unix timestamp (seconds) when githubCopilotToken expires
+  githubCopilotTokenExpiry: 0,
 };
 
 module.exports = kDefaultSettings;

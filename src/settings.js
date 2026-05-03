@@ -107,6 +107,9 @@ function renderActiveSettings() {
     if(settings.secondaryLanguageLastUsed)
       document.getElementById('langcode').innerHTML = settings.secondaryLanguageLastUsed.split('-')[0] // only display language code, not script tag (eg: zh not zh-Hans)
   }
+
+  // AI settings
+  renderAiSettings();
 }
 
 function updateLayout(layoutId) {
@@ -170,6 +173,121 @@ function renderVersion() {
   }
 }
 
+// =============================================================================
+// AI Settings
+// =============================================================================
+
+const AI_PROVIDER_MODELS = {
+  gemini: 'gemini-2.0-flash',
+  openai: 'gpt-4o-mini',
+  copilot: 'gpt-4o',
+};
+
+const AI_APIKEY_HINTS = {
+  gemini: 'Get your key at aistudio.google.com/app/apikey',
+  openai: 'Get your key at platform.openai.com/api-keys',
+  copilot: '',
+};
+
+function renderAiSettings() {
+  const provider = settings.aiProvider || 'gemini';
+
+  // Provider buttons
+  document.querySelectorAll('.ai-provider-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.provider === provider);
+  });
+
+  // Show/hide API key section
+  const apikeySection = document.getElementById('ai-apikey-section');
+  const copilotSection = document.getElementById('ai-copilot-section');
+  if (provider === 'copilot') {
+    apikeySection.style.display = 'none';
+    copilotSection.style.display = '';
+    renderCopilotStatus();
+  } else {
+    apikeySection.style.display = '';
+    copilotSection.style.display = 'none';
+    document.getElementById('ai-apikey-label').textContent =
+      provider === 'openai' ? 'OpenAI API Key' : 'Gemini API Key';
+    const keyField = document.getElementById('ai-api-key');
+    keyField.value = settings.aiApiKey || '';
+    keyField.placeholder = provider === 'openai' ? 'sk-...' : 'AIza...';
+    document.getElementById('ai-apikey-hint').textContent = AI_APIKEY_HINTS[provider] || '';
+  }
+
+  // Model
+  const modelField = document.getElementById('ai-model');
+  modelField.value = settings.aiModel || AI_PROVIDER_MODELS[provider] || '';
+  modelField.placeholder = AI_PROVIDER_MODELS[provider] || '';
+
+  // Hide model input for Copilot (server decides)
+  document.getElementById('ai-model-section').style.display = provider === 'copilot' ? 'none' : '';
+}
+
+function renderCopilotStatus() {
+  const statusEl = document.getElementById('copilot-auth-status');
+  const loginBtn = document.getElementById('copilot-login-btn');
+  const logoutBtn = document.getElementById('copilot-logout-btn');
+
+  if (settings.githubOAuthToken) {
+    statusEl.innerHTML = '<span class="ai-ok">✅ GitHub Copilot 연결됨</span>';
+    loginBtn.style.display = 'none';
+    logoutBtn.style.display = '';
+  } else {
+    statusEl.innerHTML = '<span class="ai-warn">⚠️ 로그인이 필요합니다</span>';
+    loginBtn.style.display = '';
+    logoutBtn.style.display = 'none';
+  }
+}
+
+async function startCopilotLogin() {
+  const loginBtn = document.getElementById('copilot-login-btn');
+  const deviceFlowDiv = document.getElementById('copilot-device-flow');
+  const pollStatus = document.getElementById('copilot-poll-status');
+
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Starting...';
+
+  chrome.runtime.sendMessage({ action: 'github_start_device_flow' }, async (resp) => {
+    if (!resp || !resp.ok) {
+      alert('GitHub 로그인 시작 실패: ' + (resp?.error || 'Unknown error'));
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Login with GitHub';
+      return;
+    }
+
+    const { device_code, user_code, verification_uri, interval } = resp.data;
+
+    // Show device code UI
+    deviceFlowDiv.style.display = '';
+    document.getElementById('copilot-verify-url').href = verification_uri;
+    document.getElementById('copilot-verify-url').textContent = verification_uri;
+    document.getElementById('copilot-user-code').textContent = user_code;
+    pollStatus.textContent = 'Waiting for authorization...';
+
+    // Poll for token
+    chrome.runtime.sendMessage({ action: 'github_poll_device_token', deviceCode: device_code, interval }, (pollResp) => {
+      deviceFlowDiv.style.display = 'none';
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Login with GitHub';
+
+      if (!pollResp || !pollResp.ok) {
+        alert('GitHub 인증 실패: ' + (pollResp?.error || 'Unknown error'));
+        return;
+      }
+
+      // settings updated in service worker, reload
+      port.postMessage({ settings: null }); // trigger reload from storage
+    });
+  });
+}
+
+function copilotLogout() {
+  chrome.runtime.sendMessage({ action: 'github_logout' }, () => {
+    port.postMessage({ settings: null }); // trigger reload from storage
+  });
+}
+
 
 window.addEventListener('load', evt => {
   renderVersion();
@@ -224,4 +342,39 @@ window.addEventListener('load', evt => {
   btnReset.addEventListener('click', evt => {
     resetSettings();
   }, false);
+
+  // AI settings event handlers
+  // ---------------------------------------------------------------------------
+  document.querySelectorAll('.ai-provider-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const provider = btn.dataset.provider;
+      settings = Object.assign(settings, {
+        aiProvider: provider,
+        aiModel: AI_PROVIDER_MODELS[provider] || settings.aiModel,
+      });
+      uploadSettings();
+      renderActiveSettings();
+    });
+  });
+
+  document.getElementById('ai-apikey-save').addEventListener('click', () => {
+    const key = document.getElementById('ai-api-key').value.trim();
+    settings = Object.assign(settings, { aiApiKey: key });
+    uploadSettings();
+    const btn = document.getElementById('ai-apikey-save');
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save'; }, 1500);
+  });
+
+  document.getElementById('ai-model-save').addEventListener('click', () => {
+    const model = document.getElementById('ai-model').value.trim();
+    settings = Object.assign(settings, { aiModel: model });
+    uploadSettings();
+    const btn = document.getElementById('ai-model-save');
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save'; }, 1500);
+  });
+
+  document.getElementById('copilot-login-btn').addEventListener('click', startCopilotLogin);
+  document.getElementById('copilot-logout-btn').addEventListener('click', copilotLogout);
 });

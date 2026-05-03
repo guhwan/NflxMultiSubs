@@ -46,6 +46,11 @@
   },
   "host_permissions": [
     "https://www.netflix.com/watch/*",
-    "https://assets.nflxext.com/*"
+    "https://assets.nflxext.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.openai.com/*",
+    "https://github.com/*",
+    "https://api.github.com/*",
+    "https://api.githubcopilot.com/*"
   ]
 }

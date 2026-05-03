@@ -104,11 +104,51 @@
     <hr/>
     <div>
       <a id="btnReset" tabIndex="-1">Reset to Default</a>
-      <!--
-      &nbsp;|&nbsp;
-      <a class="pro-link" tabIndex="-1">Pro Mode</a>
-      -->
     </div>
+    <hr/>
+
+    <section class="settings-ai">
+      <h2>🤖 AI Translation</h2>
+
+      <p class="ai-label">Provider</p>
+      <div class="ai-provider-list">
+        <div data-provider="gemini" class="ai-provider-btn">Gemini</div>
+        <div data-provider="openai" class="ai-provider-btn">OpenAI</div>
+        <div data-provider="copilot" class="ai-provider-btn">GitHub Copilot</div>
+      </div>
+
+      <div id="ai-apikey-section">
+        <p class="ai-label" id="ai-apikey-label">API Key</p>
+        <div class="ai-input-row">
+          <input type="password" id="ai-api-key" placeholder="Enter API key" autocomplete="off" />
+          <button id="ai-apikey-save">Save</button>
+        </div>
+        <p class="ai-hint" id="ai-apikey-hint"></p>
+      </div>
+
+      <div id="ai-model-section">
+        <p class="ai-label">Model</p>
+        <div class="ai-input-row">
+          <input type="text" id="ai-model" placeholder="e.g. gemini-2.0-flash" />
+          <button id="ai-model-save">Save</button>
+        </div>
+      </div>
+
+      <div id="ai-copilot-section" style="display:none">
+        <div id="copilot-auth-status"></div>
+        <div id="copilot-device-flow" style="display:none">
+          <p class="ai-hint">Visit the URL below and enter the code:</p>
+          <a id="copilot-verify-url" href="#" target="_blank"></a>
+          <p class="ai-device-code" id="copilot-user-code"></p>
+          <p class="ai-hint" id="copilot-poll-status">Waiting for authorization...</p>
+        </div>
+        <div class="ai-input-row">
+          <button id="copilot-login-btn">Login with GitHub</button>
+          <button id="copilot-logout-btn" style="display:none">Logout</button>
+        </div>
+      </div>
+    </section>
+
     <hr/>
 
     <footer>
