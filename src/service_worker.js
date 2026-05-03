@@ -50,9 +50,11 @@ async function fetchCopilotToken(oauthToken) {
       'User-Agent': 'GithubCopilot/1.155.0',
     },
   });
-  if (!resp.ok) throw new Error(`Copilot token fetch failed: ${resp.status}`);
-  const data = await resp.json();
-  return { token: data.token, expiresAt: data.expires_at }; // expires_at is Unix seconds
+  const body = await resp.text();
+  if (!resp.ok) throw new Error(`Copilot 토큰 발급 실패 (${resp.status}): ${body}`);
+  const data = JSON.parse(body);
+  if (!data.token) throw new Error(`Copilot 토큰 없음. 응답: ${body}`);
+  return { token: data.token, expiresAt: data.expires_at };
 }
 
 // Get a valid Copilot token, refreshing if needed
@@ -61,9 +63,8 @@ async function getValidCopilotToken(settings) {
   if (settings.githubCopilotToken && settings.githubCopilotTokenExpiry > now + 60) {
     return settings.githubCopilotToken;
   }
-  if (!settings.githubOAuthToken) throw new Error('No GitHub OAuth token – please authenticate via Settings');
+  if (!settings.githubOAuthToken) throw new Error('GitHub 로그인이 필요합니다 (플러그인 설정 확인)');
   const { token, expiresAt } = await fetchCopilotToken(settings.githubOAuthToken);
-  // persist refreshed token back into storage
   settings.githubCopilotToken = token;
   settings.githubCopilotTokenExpiry = expiresAt;
   saveSettings(settings);
@@ -87,11 +88,9 @@ async function handleCopilotTranslate(settings, messages) {
     },
     body: JSON.stringify({ model, messages, temperature: 0.2 }),
   });
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Copilot API error ${resp.status}: ${err}`);
-  }
-  return resp.json();
+  const body = await resp.text();
+  if (!resp.ok) throw new Error(`Copilot API 오류 (${resp.status}) model=${model}: ${body}`);
+  return JSON.parse(body);
 }
 
 // return true if valid; otherwise return false
@@ -364,6 +363,7 @@ chrome.runtime.onMessageExternal && chrome.runtime.onMessageExternal.addListener
         const result = await handleCopilotTranslate(gSettings, msg.messages);
         sendResponse({ ok: true, data: result });
       } catch (e) {
+        console.error('[Copilot translate error]', e.message);
         sendResponse({ ok: false, error: e.message });
       }
       return;
