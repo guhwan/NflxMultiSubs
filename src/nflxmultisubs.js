@@ -674,6 +674,7 @@ async function runStreamTranslation(subtitleInstance) {
     return;
   }
 
+  subtitleInstance.isTranslating = true;
   const CHUNK_SIZE = 50;
   let failCount = 0;
   let lastError = null;
@@ -714,9 +715,10 @@ async function runStreamTranslation(subtitleInstance) {
   }
 
   if (failCount === Math.ceil(textLines.length / CHUNK_SIZE)) {
-    // 전청크 실패 — 오류 메시지 표시
+    subtitleInstance.isTranslating = false;
     updateProgressUI(textLines.length, textLines.length, false, null, true, lastError?.message || '모든 쫑크 실패');
   } else {
+    subtitleInstance.isTranslating = false;
     updateProgressUI(textLines.length, textLines.length, true);
     console.log('모든 번역 완료!');
   }
@@ -726,21 +728,18 @@ class AiTranslatedSubtitle extends TextSubtitle {
   constructor(lang, bcp47, urls, isCaption) {
     super(lang, bcp47, urls, isCaption);
     this.isAi = true;
+    this.isTranslating = false;
   }
 
-  // 데이터 다운로드 및 파싱
+  // 번역 중에는 캐시 무시하고 항상 재렌더
+  render(seconds, options, forced) {
+    return super.render(seconds, options, forced || this.isTranslating);
+  }
+
   _extract(fetchPromise) {
-    // 1. 부모 클래스의 _extract를 호출하여 '영어 자막'을 먼저 다 로드함.
     return super._extract(fetchPromise).then(() => {
-      
-      // 2. 로드가 끝나면 바로 '준비 완료(READY)' 상태가 되어 화면에 영어가 뜸.
-      console.log("영어 자막 로드 완료. 백그라운드 번역 시작...");
-      
-      // 3. [중요] await 없이 비동기로 번역 함수를 실행 (Fire and Forget)
-      // 이렇게 해야 사용자는 기다리지 않고 바로 영상을 볼 수 있음.
-      runStreamTranslation(this); 
-      
-      // 4. 즉시 Promise를 리턴하여 넷플릭스 플레이어에게 "나 준비됐어!"라고 알림
+      console.log('영어 자막 로드 완료. 백그라운드 번역 시작...');
+      runStreamTranslation(this);
       return Promise.resolve();
     });
   }
