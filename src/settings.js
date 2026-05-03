@@ -276,6 +276,12 @@ async function startCopilotLogin() {
         return;
       }
 
+      // ✅ 로그인 성공 → provider를 copilot으로 자동 전환
+      settings = Object.assign(settings, {
+        aiProvider: 'copilot',
+        aiModel: 'gpt-4o',
+      });
+      uploadSettings();
       // settings updated in service worker, reload
       port.postMessage({ settings: null }); // trigger reload from storage
     });

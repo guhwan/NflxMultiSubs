@@ -311,10 +311,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'github_poll_device_token') {
       try {
         const oauthToken = await githubPollDeviceToken(msg.deviceCode, msg.interval);
-        // save oauth token and clear stale copilot token
+        // save oauth token, clear stale copilot token, auto-switch provider
         gSettings.githubOAuthToken = oauthToken;
         gSettings.githubCopilotToken = '';
         gSettings.githubCopilotTokenExpiry = 0;
+        gSettings.aiProvider = 'copilot';
+        gSettings.aiModel = gSettings.aiModel || 'gpt-4o';
         saveSettings(gSettings);
         dispatchSettings(gSettings);
         sendResponse({ ok: true });
