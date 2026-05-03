@@ -336,28 +336,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // --- Copilot translation proxy (called from content script) ---
-    if (msg.action === 'copilot_translate') {
-      try {
-        const result = await handleCopilotTranslate(gSettings, msg.messages);
-        sendResponse({ ok: true, data: result });
-      } catch (e) {
-        sendResponse({ ok: false, error: e.message });
-      }
-      return;
-    }
-
-    sendResponse({ ok: false, error: 'Unknown action' });
-  })();
-  return true; // keep message channel open for async response
-});
-
-// Messages from externally-connectable page scripts (nflxmultisubs.js injected into netflix.com)
-// These arrive on onMessageExternal, NOT onMessage
-chrome.runtime.onMessageExternal && chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
-  (async () => {
-    const gSettings = await loadSettings();
-
+    // --- Copilot translation proxy (called from content.js relay) ---
     if (msg.action === 'copilot_translate') {
       try {
         const result = await handleCopilotTranslate(gSettings, msg.messages);
@@ -371,5 +350,5 @@ chrome.runtime.onMessageExternal && chrome.runtime.onMessageExternal.addListener
 
     sendResponse({ ok: false, error: 'Unknown action' });
   })();
-  return true;
+  return true; // keep message channel open for async response
 });

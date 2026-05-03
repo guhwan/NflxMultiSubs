@@ -621,21 +621,36 @@ async function translateWithOpenAI(originalTexts, chunkIndex) {
   return parseTranslatedArray(rawText, chunkIndex);
 }
 
-// --- Provider: GitHub Copilot (relayed via service_worker) ---
+// --- Provider: GitHub Copilot (relayed via content.js → service_worker) ---
 async function translateWithCopilot(originalTexts, chunkIndex) {
   const prompt = buildTranslationPrompt(originalTexts);
   const messages = [{ role: 'user', content: prompt }];
+  const reqId = `copilot_${Date.now()}_${chunkIndex}`;
+
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(
-      extensionId,
-      { action: 'copilot_translate', messages },
-      (resp) => {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        if (!resp || !resp.ok) return reject(new Error(resp?.error || 'Copilot 번역 실패'));
-        const rawText = resp.data?.choices?.[0]?.message?.content || '';
-        resolve(parseTranslatedArray(rawText, chunkIndex));
-      }
-    );
+    const timeout = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      reject(new Error('Copilot 응답 타임아웃 (30초)'));
+    }, 30000);
+
+    function handler(evt) {
+      if (!evt.data || evt.data.namespace !== 'nflxmultisubs') return;
+      if (evt.data.action !== 'copilot_translate_response') return;
+      if (evt.data.reqId !== reqId) return;
+      clearTimeout(timeout);
+      window.removeEventListener('message', handler);
+      if (!evt.data.ok) return reject(new Error(evt.data.error || 'Copilot 번역 실패'));
+      const rawText = evt.data.data?.choices?.[0]?.message?.content || '';
+      resolve(parseTranslatedArray(rawText, chunkIndex));
+    }
+
+    window.addEventListener('message', handler);
+    window.postMessage({
+      namespace: 'nflxmultisubs',
+      action: 'copilot_translate',
+      reqId,
+      messages,
+    }, '*');
   });
 }
 

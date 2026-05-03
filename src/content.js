@@ -58,4 +58,21 @@ window.addEventListener('message', evt => {
       gMsgPort.postMessage({ stopPlayback: 1 });
     }
   }
+  else if (evt.data.action === 'copilot_translate') {
+    const { reqId, messages } = evt.data;
+    chrome.runtime.sendMessage(
+      { action: 'copilot_translate', messages },
+      (resp) => {
+        const response = chrome.runtime.lastError
+          ? { ok: false, error: chrome.runtime.lastError.message }
+          : (resp || { ok: false, error: 'No response from service worker' });
+        window.postMessage({
+          namespace: 'nflxmultisubs',
+          action: 'copilot_translate_response',
+          reqId,
+          ...response,
+        }, '*');
+      }
+    );
+  }
 }, false);
