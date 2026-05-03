@@ -821,10 +821,10 @@ const buildSubtitleList = textTracks => {
     // 한국어 제외한 모든 텍스트 트랙 중 우선순위 언어 먼저, 없으면 첫 번째
     // dfxp-ls-sdh는 isImage 여부와 관계없이 항상 후보 (텍스트 콘텐트를 포함할 수 있음)
     const hasDownloadableFormat = t => {
-      const FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
+      const FMTS = ['dfxp-ls-sdh', 'imsc1.1', 'simplesdh', 'nflx-cmisc'];
       return FMTS.some(fmt => {
         const d = t.ttDownloadables && t.ttDownloadables[fmt];
-        return d && (d.downloadUrls || (d.urls && d.urls.length));
+        return d && !d.isImage && (d.downloadUrls || (d.urls && d.urls.length));
       });
     };
     const sourceTrack =
@@ -844,12 +844,12 @@ const buildSubtitleList = textTracks => {
     }
 
     if (sourceTrack) {
-      const FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
+      const FMTS = ['dfxp-ls-sdh', 'imsc1.1', 'simplesdh', 'nflx-cmisc'];
       let urls = [];
       let usedFormat = null;
       for (const fmt of FMTS) {
         const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables[fmt];
-        if (!d) continue;
+        if (!d || d.isImage) continue;
         if (d.downloadUrls) { urls = Object.values(d.downloadUrls); usedFormat = fmt; break; }
         if (d.urls && d.urls.length) { urls = d.urls.map(u => u.url); usedFormat = fmt; break; }
       }
