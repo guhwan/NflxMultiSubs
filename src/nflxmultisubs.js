@@ -775,35 +775,54 @@ const buildSubtitleList = textTracks => {
     console.log('[NflxMultiSubs] available subtitle languages:', allLangs);
 
     // 한국어 제외한 모든 텍스트 트랙 중 우선순위 언어 먼저, 없으면 첫 번째
+    // 조건: 텍스트 포맷(dfxp-ls-sdh 등)이 있는 트랙만 선택
+    const hasTextFormat = t => {
+      const TEXT_FMTS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
+      return TEXT_FMTS.some(fmt => {
+        const d = t.ttDownloadables && t.ttDownloadables[fmt];
+        return d && !d.isImage && (d.downloadUrls || (d.urls && d.urls.length));
+      });
+    };
     const sourceTrack =
-      PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l)).find(Boolean) ||
+      PREFERRED_LANGS.map(l => textTracks.find(t => t.language === l && hasTextFormat(t))).find(Boolean) ||
       textTracks.find(t =>
-        t.ttDownloadables &&
-        t.ttDownloadables['dfxp-ls-sdh'] &&
         t.language !== 'ko' &&
-        !SubtitleFactory.isNoneTrack(t)
+        !SubtitleFactory.isNoneTrack(t) &&
+        hasTextFormat(t)
       );
 
     console.log('[NflxMultiSubs] selected source track:', sourceTrack?.language, sourceTrack?.languageDescription);
 
     if (sourceTrack) {
-      // dfxp-ls-sdh 먼저 시도, 없으면 다른 포맷 fallback
-      const FORMATS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc', 'webvtt-lssdh-ios8'];
+      // 이미지 기반 자막인지 확인 (ZIP 포맷 — TextSubtitle로 파싱 불가)
+      const isImageBased = sourceTrack.ttDownloadables &&
+        Object.values(sourceTrack.ttDownloadables).some(d => d.isImage);
+      console.log('[NflxMultiSubs] source track isImageBased:', isImageBased);
+
+      // 텍스트 전용 포맷 우선, 이미지 트랙은 텍스트 포맷만 선택
+      const TEXT_FORMATS = ['dfxp-ls-sdh', 'simplesdh', 'nflx-cmisc'];
       let urls = [];
       let usedFormat = null;
-      for (const fmt of FORMATS) {
+
+      for (const fmt of TEXT_FORMATS) {
         const d = sourceTrack.ttDownloadables && sourceTrack.ttDownloadables[fmt];
         if (!d) continue;
+        // 이미지 포맷은 건너뜀
+        if (d.isImage) continue;
         if (d.downloadUrls) { urls = Object.values(d.downloadUrls); usedFormat = fmt; break; }
         if (d.urls && d.urls.length) { urls = d.urls.map(u => u.url); usedFormat = fmt; break; }
       }
       console.log('[NflxMultiSubs] using format:', usedFormat, 'urls count:', urls.length);
+
       if (urls.length > 0) {
         const srcLang = sourceTrack.language || '?';
         const aiSub = new AiTranslatedSubtitle(`AI 한국어 (${srcLang})`, 'ko-ai', urls, false, srcLang);
         subs.unshift(aiSub);
       } else {
-        console.warn('[NflxMultiSubs] source track has no usable URLs, available downloadables:', Object.keys(sourceTrack.ttDownloadables || {}));
+        console.warn('[NflxMultiSubs] 텍스트 기반 URL 없음. 이미지 자막은 AI 번역 불가.');
+        console.warn('[NflxMultiSubs] available downloadables:', JSON.stringify(
+          Object.entries(sourceTrack.ttDownloadables || {}).map(([k,v]) => ({ fmt: k, isImage: v.isImage }))
+        ));
       }
     } else {
       console.warn('[NflxMultiSubs] no suitable source track found for AI translation');
